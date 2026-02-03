@@ -140,6 +140,44 @@ function Get-AllTunnels {
     return (Get-TunnelConfig).Tunnels
 }
 
+function Test-ValidPort {
+    param([int]$Port, [string]$PortName = 'Port')
+    if ($Port -lt 1 -or $Port -gt 65535) {
+        throw "$PortName must be between 1 and 65535 (got: $Port)."
+    }
+    return $true
+}
+
+function Test-LocalPortAvailable {
+    param([int]$LocalPort, [string]$ExcludeTunnelName = $null)
+    $cfg = Get-TunnelConfig
+    foreach ($t in $cfg.Tunnels) {
+        if ($ExcludeTunnelName -and $t.Name -eq $ExcludeTunnelName) { continue }
+        if ([int]$t.LocalPort -eq $LocalPort) {
+            throw "Local port $LocalPort is already used by tunnel '$($t.Name)'."
+        }
+    }
+    return $true
+}
+
+function Test-DuplicateTunnel {
+    param(
+        [string]$RemoteHost,
+        [int]$RemotePort,
+        [int]$LocalPort,
+        [string]$ExcludeTunnelName = $null
+    )
+    $cfg = Get-TunnelConfig
+    foreach ($t in $cfg.Tunnels) {
+        if ($ExcludeTunnelName -and $t.Name -eq $ExcludeTunnelName) { continue }
+        # Check if same remote target AND same local port
+        if ($t.RemoteHost -eq $RemoteHost -and [int]$t.RemotePort -eq $RemotePort -and [int]$t.LocalPort -eq $LocalPort) {
+            throw "A tunnel with the same configuration already exists: '$($t.Name)' (localhost:$LocalPort -> ${RemoteHost}:$RemotePort)."
+        }
+    }
+    return $true
+}
+
 function Add-Tunnel {
     param(
         [string]$Name,
@@ -151,10 +189,29 @@ function Add-Tunnel {
         [int]$SshPort = 22
     )
     Write-SSHXLog "Adding tunnel: $Name -> $RemoteHost`:$RemotePort (local: $LocalPort)"
+    
+    # Validate required fields
+    if ([string]::IsNullOrWhiteSpace($Name)) { throw 'Name is required.' }
     if ([string]::IsNullOrWhiteSpace($RemoteHost)) { throw 'RemoteHost is required.' }
     if ([string]::IsNullOrWhiteSpace($Username)) { throw 'Username is required.' }
+    if ([string]::IsNullOrWhiteSpace($PasswordPlain)) { throw 'Password is required.' }
+    
+    # Validate port ranges
+    Test-ValidPort -Port $RemotePort -PortName 'Remote Port' | Out-Null
+    Test-ValidPort -Port $LocalPort -PortName 'Local Port' | Out-Null
+    if ($SshPort -le 0) { $SshPort = 22 }
+    Test-ValidPort -Port $SshPort -PortName 'SSH Port' | Out-Null
+    
+    # Check for duplicate name
     $cfg = Get-TunnelConfig
     if (Get-TunnelByName -Name $Name) { throw "Tunnel '$Name' already exists." }
+    
+    # Check local port not already in use
+    Test-LocalPortAvailable -LocalPort $LocalPort | Out-Null
+    
+    # Check for duplicate tunnel config
+    Test-DuplicateTunnel -RemoteHost $RemoteHost -RemotePort $RemotePort -LocalPort $LocalPort | Out-Null
+    
     $enc = Get-EncryptedPassword -Plain $PasswordPlain
     $t = [pscustomobject]@{
         Name              = $Name
@@ -189,8 +246,39 @@ function Update-Tunnel {
         if ($cfg.Tunnels[$i].Name -eq $Name) { $idx = $i; break }
     }
     if ($idx -lt 0) { throw "Tunnel '$Name' not found." }
+    
+    $existing = $cfg.Tunnels[$idx]
+    
+    # Check for duplicate name if renaming
+    if ($null -ne $NewName -and $NewName -ne '' -and $NewName -ne $Name) {
+        if (Get-TunnelByName -Name $NewName) { throw "Tunnel '$NewName' already exists." }
+    }
+    
+    # Validate ports if changing them
+    if ($RemotePort -gt 0 -and $RemotePort -ne [int]$existing.RemotePort) {
+        Test-ValidPort -Port $RemotePort -PortName 'Remote Port' | Out-Null
+    }
+    if ($LocalPort -gt 0 -and $LocalPort -ne [int]$existing.LocalPort) {
+        Test-ValidPort -Port $LocalPort -PortName 'Local Port' | Out-Null
+        Test-LocalPortAvailable -LocalPort $LocalPort -ExcludeTunnelName $Name | Out-Null
+    }
+    if ($SshPort -gt 0 -and $SshPort -ne [int]$existing.SshPort) {
+        Test-ValidPort -Port $SshPort -PortName 'SSH Port' | Out-Null
+    }
+    
+    # Check for duplicate tunnel config if changing remote host/port/local port
+    $finalRemoteHost = if ($null -ne $RemoteHost -and $RemoteHost -ne '') { $RemoteHost } else { $existing.RemoteHost }
+    $finalRemotePort = if ($RemotePort -gt 0) { $RemotePort } else { [int]$existing.RemotePort }
+    $finalLocalPort = if ($LocalPort -gt 0) { $LocalPort } else { [int]$existing.LocalPort }
+    
+    # Only check for duplicates if something changed
+    $configChanged = ($finalRemoteHost -ne $existing.RemoteHost) -or ($finalRemotePort -ne [int]$existing.RemotePort) -or ($finalLocalPort -ne [int]$existing.LocalPort)
+    if ($configChanged) {
+        Test-DuplicateTunnel -RemoteHost $finalRemoteHost -RemotePort $finalRemotePort -LocalPort $finalLocalPort -ExcludeTunnelName $Name | Out-Null
+    }
+    
+    # Apply changes
     if ($null -ne $NewName -and $NewName -ne '') { $cfg.Tunnels[$idx].Name = $NewName }
-    # Only assign when caller explicitly provided a new value; do not overwrite with $null or ""
     if ($null -ne $RemoteHost -and $RemoteHost -ne '') { $cfg.Tunnels[$idx].RemoteHost = $RemoteHost }
     if ($RemotePort -gt 0) { $cfg.Tunnels[$idx].RemotePort = $RemotePort }
     if ($LocalPort -gt 0) { $cfg.Tunnels[$idx].LocalPort = $LocalPort }
@@ -246,6 +334,18 @@ function Get-PlinkInvocationInfo { param([string]$Name)
 # Start / Stop / Status (Start runs a runner process that restarts plink on failure)
 # ---------------------------------------------------------------------------
 
+function Test-PortInUseOnSystem {
+    param([int]$Port)
+    try {
+        $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, $Port)
+        $listener.Start()
+        $listener.Stop()
+        return $false  # Port is available
+    } catch {
+        return $true   # Port is in use
+    }
+}
+
 function Start-Tunnel { param([string]$Name)
     Write-SSHXLog "Starting tunnel: $Name"
     $t = Get-TunnelByName -Name $Name
@@ -260,6 +360,13 @@ function Start-Tunnel { param([string]$Name)
             throw "Tunnel '$Name' is already running (PID $($t.Pid))." 
         }
         $t.Pid = $null
+    }
+    
+    # Check if local port is already in use on the system
+    $localPort = [int]$t.LocalPort
+    if (Test-PortInUseOnSystem -Port $localPort) {
+        Write-SSHXLog "Local port $localPort is already in use on this system" -Level 'ERROR'
+        throw "Cannot start tunnel: local port $localPort is already in use by another process."
     }
     $mod = Get-Module SSHTunnelCore
     $runnerPath = Join-Path $mod.ModuleBase 'SSHTunnelRunner.ps1'
@@ -320,21 +427,46 @@ function Stop-Tunnel { param([string]$Name)
     $true
 }
 
+function Test-LocalPortListening {
+    param([int]$Port)
+    try {
+        $conn = New-Object System.Net.Sockets.TcpClient
+        $conn.Connect('127.0.0.1', $Port)
+        $conn.Close()
+        return $true  # Port is listening (tunnel is connected)
+    } catch {
+        return $false  # Port is not listening
+    }
+}
+
 function Get-TunnelStatus { param([string]$Name)
     $t = Get-TunnelByName -Name $Name
     if (-not $t) { return $null }
-    $running = $false
+    $runnerAlive = $false
+    $tunnelConnected = $false
+    
     if ($t.Pid) {
         $p = Get-Process -Id $t.Pid -ErrorAction SilentlyContinue
-        $running = $null -ne $p
-        if (-not $running) {
+        $runnerAlive = $null -ne $p
+        if (-not $runnerAlive) {
             $cfg = Get-TunnelConfig
             foreach ($x in $cfg.Tunnels) { if ($x.Name -eq $Name) { $x.Pid = $null; break } }
             Save-TunnelConfig -Config $cfg
             $t.Pid = $null
         }
     }
-    [pscustomobject]@{ Tunnel = $t; Running = $running; Pid = $t.Pid }
+    
+    # Check if the tunnel is actually connected by testing if local port is listening
+    if ($runnerAlive -and $t.LocalPort -gt 0) {
+        $tunnelConnected = Test-LocalPortListening -Port ([int]$t.LocalPort)
+    }
+    
+    [pscustomobject]@{ 
+        Tunnel = $t
+        Running = $runnerAlive
+        Connected = $tunnelConnected
+        Pid = $t.Pid 
+    }
 }
 
 function Get-AllTunnelStatuses {
@@ -367,5 +499,6 @@ Export-ModuleMember -Function @(
     'Get-EncryptedPassword','Get-PlainPassword',
     'Get-TunnelByName','Get-AllTunnels','Add-Tunnel','Update-Tunnel','Remove-Tunnel',
     'Get-ForwardArg','Get-PlinkInvocationInfo','Start-Tunnel','Stop-Tunnel','Get-TunnelStatus','Get-AllTunnelStatuses',
-    'Get-PlinkPath','Initialize-ConfigDir','Test-HostKeyError'
+    'Get-PlinkPath','Initialize-ConfigDir','Test-HostKeyError',
+    'Test-ValidPort','Test-LocalPortAvailable','Test-DuplicateTunnel','Test-PortInUseOnSystem','Test-LocalPortListening'
 )

@@ -306,7 +306,8 @@ function Export-Tunnels {
 # ---------------------------------------------------------------------------
 
 function Update-TunnelListView {
-    # Access the script-level ListView directly (no logging for routine refreshes)
+    param([switch]$SkipPortCheck)  # Fast refresh without port checking
+    
     if ($null -eq $script:lv) { return }
     $script:lv.BeginUpdate()
     $selectedName = $null
@@ -315,7 +316,6 @@ function Update-TunnelListView {
     }
     $script:lv.Items.Clear()
     try {
-        # Use Get-AllTunnels directly (same as Export)
         $tunnels = Get-AllTunnels
         if ($null -eq $tunnels) { 
             $script:lv.EndUpdate()
@@ -324,19 +324,43 @@ function Update-TunnelListView {
         foreach ($t in $tunnels) {
             if ($null -eq $t) { continue }
             
-            # Check if running
-            $running = $false
+            $tunnelName = if ($t.Name) { $t.Name } else { '(unnamed)' }
+            
+            # Check runner process status
+            $runnerAlive = $false
             if ($t.Pid) {
                 $proc = Get-Process -Id $t.Pid -ErrorAction SilentlyContinue
-                $running = $null -ne $proc
+                $runnerAlive = $null -ne $proc
             }
             
-            $st = if ($running) { 'Running' } else { 'Stopped' }
+            # Check if port is actually listening (tunnel might be working even if we lost track of PID)
+            $portListening = $false
+            if (-not $SkipPortCheck -and $t.LocalPort -gt 0) {
+                $portListening = Test-LocalPortListening -Port ([int]$t.LocalPort)
+            }
+            
+            # Determine display status - port listening is the source of truth
+            if ($portListening) {
+                # Port is listening = tunnel is working (regardless of PID tracking)
+                $st = 'Connected'
+                $color = [System.Drawing.Color]::DarkGreen
+            } elseif ($SkipPortCheck -and $runnerAlive) {
+                # Show intermediate state during actions
+                $st = 'Starting...'
+                $color = [System.Drawing.Color]::DarkOrange
+            } elseif ($runnerAlive) {
+                # Runner is alive but port not listening = failing
+                $st = 'Failing'
+                $color = [System.Drawing.Color]::OrangeRed
+            } else {
+                $st = 'Stopped'
+                $color = [System.Drawing.Color]::Black
+            }
+            
             $local = if ($t.LocalPort) { [string]$t.LocalPort } else { '' }
             $remote = "$($t.RemoteHost):$($t.RemotePort)"
             $ssh = if ($t.SshPort -and $t.SshPort -ne 22) { [string]$t.SshPort } else { '22' }
             $userName = if ($t.Username) { $t.Username } else { '' }
-            $tunnelName = if ($t.Name) { $t.Name } else { '(unnamed)' }
             
             $li = New-Object System.Windows.Forms.ListViewItem($tunnelName)
             $li.SubItems.Add($st) | Out-Null
@@ -345,8 +369,7 @@ function Update-TunnelListView {
             $li.SubItems.Add($ssh) | Out-Null
             $li.SubItems.Add($userName) | Out-Null
             $li.Tag = $t
-            if ($running) { $li.ForeColor = [System.Drawing.Color]::DarkGreen }
-            else { $li.ForeColor = [System.Drawing.Color]::Black }
+            $li.ForeColor = $color
             [void]$script:lv.Items.Add($li)
             if ($tunnelName -eq $selectedName) { $li.Selected = $true }
         }
@@ -356,9 +379,74 @@ function Update-TunnelListView {
     $script:lv.EndUpdate()
 }
 
+# Update status for a single tunnel by name (faster than full refresh)
+function Update-SingleTunnelStatus {
+    param([string]$TunnelName, [string]$Status, [System.Drawing.Color]$Color)
+    
+    if ($null -eq $script:lv) { return }
+    foreach ($item in $script:lv.Items) {
+        if ($item.Text -eq $TunnelName) {
+            $item.SubItems[1].Text = $Status
+            $item.ForeColor = $Color
+            break
+        }
+    }
+}
+
+# Schedule a delayed status check for a specific tunnel
+function Schedule-StatusCheck {
+    param([string]$TunnelName, [int]$DelayMs = 2500)
+    
+    $timer = New-Object System.Windows.Forms.Timer
+    $timer.Interval = $DelayMs
+    $tn = $TunnelName
+    $lv = $script:lv  # Capture reference to ListView
+    
+    $timer.Add_Tick({
+        $timer.Stop()
+        $timer.Dispose()
+        
+        # Check actual status
+        $t = Get-TunnelByName -Name $tn
+        if ($null -eq $t) { return }
+        
+        # Port listening is the source of truth
+        $portListening = Test-LocalPortListening -Port ([int]$t.LocalPort)
+        
+        $runnerAlive = $false
+        if ($t.Pid) {
+            $proc = Get-Process -Id $t.Pid -ErrorAction SilentlyContinue
+            $runnerAlive = $null -ne $proc
+        }
+        
+        # Determine status and color - port listening takes priority
+        if ($portListening) {
+            $st = 'Connected'
+            $clr = [System.Drawing.Color]::DarkGreen
+        } elseif ($runnerAlive) {
+            $st = 'Failing'
+            $clr = [System.Drawing.Color]::OrangeRed
+        } else {
+            $st = 'Stopped'
+            $clr = [System.Drawing.Color]::Black
+        }
+        
+        # Update the ListView item directly (inlined to avoid scope issues)
+        if ($null -ne $lv) {
+            foreach ($item in $lv.Items) {
+                if ($item.Text -eq $tn) {
+                    $item.SubItems[1].Text = $st
+                    $item.ForeColor = $clr
+                    break
+                }
+            }
+        }
+    }.GetNewClosure())
+    $timer.Start()
+}
+
 function Get-SelectedTunnel {
-    param([System.Windows.Forms.ListView]$script:lv)
-    if ($script:lv.SelectedItems.Count -eq 0) { return $null }
+    if ($null -eq $script:lv -or $script:lv.SelectedItems.Count -eq 0) { return $null }
     return $script:lv.SelectedItems[0].Tag
 }
 
@@ -440,6 +528,15 @@ function New-MainForm {
     $btnStop.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left
     $f.Controls.Add($btnStop)
 
+    # Refresh Button (right side)
+    $btnRefresh = New-Object System.Windows.Forms.Button
+    $btnRefresh.Text = 'Refresh'
+    $refreshX = [int]$f.ClientSize.Width - 165
+    $btnRefresh.Location = New-Object System.Drawing.Point($refreshX, $btnY)
+    $btnRefresh.Size = New-Object System.Drawing.Size(70, 28)
+    $btnRefresh.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Right
+    $f.Controls.Add($btnRefresh)
+
     # Export Button (right side)
     $btnExport = New-Object System.Windows.Forms.Button
     $btnExport.Text = 'Export...'
@@ -459,38 +556,89 @@ function New-MainForm {
     $miDelete = $ctx.Items.Add('Delete')
     $script:lv.ContextMenuStrip = $ctx
 
-    # Action handler
-    $act = {
-        $t = Get-SelectedTunnel -Lv $script:lv
+    # Action handler (script scope so event handlers can access it)
+    $script:act = {
+        $t = Get-SelectedTunnel
         if (-not $t) {
             [System.Windows.Forms.MessageBox]::Show('Select a tunnel first.', 'sshx', 'OK', 'Information') | Out-Null
             return
         }
         $n = $t.Name
         $actName = $args[0]
+        Write-SSHXLog "Action: $actName tunnel '$n'"
+        
+        # Show immediate visual feedback
+        if ($actName -eq 'Start' -or $actName -eq 'Restart') {
+            Update-SingleTunnelStatus -TunnelName $n -Status 'Starting...' -Color ([System.Drawing.Color]::DarkOrange)
+        } elseif ($actName -eq 'Stop') {
+            Update-SingleTunnelStatus -TunnelName $n -Status 'Stopping...' -Color ([System.Drawing.Color]::Gray)
+        }
+        [System.Windows.Forms.Application]::DoEvents()  # Force UI update
+        
         try {
             if ($actName -eq 'Start')   { Start-Tunnel -Name $n | Out-Null }
-            if ($actName -eq 'Restart') { Stop-Tunnel -Name $n -ErrorAction SilentlyContinue | Out-Null; Start-Sleep -Milliseconds 400; Start-Tunnel -Name $n | Out-Null }
+            if ($actName -eq 'Restart') { 
+                Stop-Tunnel -Name $n -ErrorAction SilentlyContinue | Out-Null
+                Start-Sleep -Milliseconds 400
+                Start-Tunnel -Name $n | Out-Null 
+            }
             if ($actName -eq 'Stop')    { Stop-Tunnel -Name $n | Out-Null }
+            Write-SSHXLog "Action: $actName completed for '$n'"
+            
+            # Schedule delayed status check (tunnel needs time to establish)
+            if ($actName -eq 'Start' -or $actName -eq 'Restart') {
+                Schedule-StatusCheck -TunnelName $n -DelayMs 2500
+            } else {
+                # Stop is immediate
+                Update-SingleTunnelStatus -TunnelName $n -Status 'Stopped' -Color ([System.Drawing.Color]::Black)
+            }
         } catch {
+            Write-SSHXLog "Action: $actName failed for '$n': $_" -Level 'ERROR'
             [System.Windows.Forms.MessageBox]::Show("$actName failed: $_", 'sshx', 'OK', 'Warning') | Out-Null
+            # Refresh to show actual state after error
+            Update-TunnelListView
         }
-        Update-TunnelListView
     }
 
     # Add tunnel
-    $addTunnel = {
+    $script:addTunnel = {
+        Write-SSHXLog "Action: Adding new tunnel"
         $data = Show-TunnelDialog -Title 'Add Tunnel'
         if ($null -eq $data) { return }
         
-        # Validation
+        # Basic validation (detailed validation in core module)
         $errors = @()
         if ([string]::IsNullOrWhiteSpace($data.Name)) { $errors += 'Name is required' }
         if ([string]::IsNullOrWhiteSpace($data.RemoteHost)) { $errors += 'Remote Host is required' }
-        if ($data.RemotePort -le 0) { $errors += 'Remote Port must be greater than 0' }
-        if ($data.LocalPort -le 0) { $errors += 'Local Port must be greater than 0' }
+        if ($data.RemotePort -le 0 -or $data.RemotePort -gt 65535) { $errors += 'Remote Port must be between 1 and 65535' }
+        if ($data.LocalPort -le 0 -or $data.LocalPort -gt 65535) { $errors += 'Local Port must be between 1 and 65535' }
+        if ($data.SshPort -le 0 -or $data.SshPort -gt 65535) { $errors += 'SSH Port must be between 1 and 65535' }
         if ([string]::IsNullOrWhiteSpace($data.Username)) { $errors += 'Username is required' }
         if ([string]::IsNullOrWhiteSpace($data.Password)) { $errors += 'Password is required for new tunnels' }
+        
+        # Check for duplicate tunnel name
+        if (-not [string]::IsNullOrWhiteSpace($data.Name)) {
+            $existing = Get-TunnelByName -Name $data.Name
+            if ($existing) { $errors += "Tunnel named '$($data.Name)' already exists" }
+        }
+        
+        # Check for local port conflict
+        if ($data.LocalPort -gt 0) {
+            try {
+                Test-LocalPortAvailable -LocalPort $data.LocalPort | Out-Null
+            } catch {
+                $errors += $_.Exception.Message
+            }
+        }
+        
+        # Check for duplicate config
+        if ($data.RemotePort -gt 0 -and $data.LocalPort -gt 0 -and -not [string]::IsNullOrWhiteSpace($data.RemoteHost)) {
+            try {
+                Test-DuplicateTunnel -RemoteHost $data.RemoteHost -RemotePort $data.RemotePort -LocalPort $data.LocalPort | Out-Null
+            } catch {
+                $errors += $_.Exception.Message
+            }
+        }
         
         if ($errors.Count -gt 0) {
             [System.Windows.Forms.MessageBox]::Show(($errors -join "`n"), 'Validation Error', 'OK', 'Warning') | Out-Null
@@ -508,14 +656,55 @@ function New-MainForm {
     }
 
     # Edit tunnel
-    $editTunnel = {
-        $t = Get-SelectedTunnel -Lv $script:lv
+    $script:editTunnel = {
+        $t = Get-SelectedTunnel
         if (-not $t) {
             [System.Windows.Forms.MessageBox]::Show('Select a tunnel first.', 'sshx', 'OK', 'Information') | Out-Null
             return
         }
         $data = Show-TunnelDialog -Title 'Edit Tunnel' -Tunnel $t
         if ($data) {
+            Write-SSHXLog "Action: Editing tunnel '$($t.Name)'"
+            
+            # Validation
+            $errors = @()
+            if ([string]::IsNullOrWhiteSpace($data.Name)) { $errors += 'Name is required' }
+            if ([string]::IsNullOrWhiteSpace($data.RemoteHost)) { $errors += 'Remote Host is required' }
+            if ($data.RemotePort -le 0 -or $data.RemotePort -gt 65535) { $errors += 'Remote Port must be between 1 and 65535' }
+            if ($data.LocalPort -le 0 -or $data.LocalPort -gt 65535) { $errors += 'Local Port must be between 1 and 65535' }
+            if ($data.SshPort -le 0 -or $data.SshPort -gt 65535) { $errors += 'SSH Port must be between 1 and 65535' }
+            if ([string]::IsNullOrWhiteSpace($data.Username)) { $errors += 'Username is required' }
+            
+            # Check for duplicate name if renaming
+            if ($data.Name -ne $t.Name) {
+                $existing = Get-TunnelByName -Name $data.Name
+                if ($existing) { $errors += "Tunnel named '$($data.Name)' already exists" }
+            }
+            
+            # Check for local port conflict if changing local port
+            if ($data.LocalPort -ne [int]$t.LocalPort) {
+                try {
+                    Test-LocalPortAvailable -LocalPort $data.LocalPort -ExcludeTunnelName $t.Name | Out-Null
+                } catch {
+                    $errors += $_.Exception.Message
+                }
+            }
+            
+            # Check for duplicate config if changing tunnel settings
+            $configChanged = ($data.RemoteHost -ne $t.RemoteHost) -or ($data.RemotePort -ne [int]$t.RemotePort) -or ($data.LocalPort -ne [int]$t.LocalPort)
+            if ($configChanged) {
+                try {
+                    Test-DuplicateTunnel -RemoteHost $data.RemoteHost -RemotePort $data.RemotePort -LocalPort $data.LocalPort -ExcludeTunnelName $t.Name | Out-Null
+                } catch {
+                    $errors += $_.Exception.Message
+                }
+            }
+            
+            if ($errors.Count -gt 0) {
+                [System.Windows.Forms.MessageBox]::Show(($errors -join "`n"), 'Validation Error', 'OK', 'Warning') | Out-Null
+                return
+            }
+            
             try {
                 $params = @{ Name = $t.Name }
                 if ($data.Name -ne $t.Name) { $params['NewName'] = $data.Name }
@@ -526,82 +715,77 @@ function New-MainForm {
                 if ($data.Username) { $params['Username'] = $data.Username }
                 if (-not [string]::IsNullOrWhiteSpace($data.Password)) { $params['PasswordPlain'] = $data.Password }
                 Update-Tunnel @params | Out-Null
+                Write-SSHXLog "Action: Tunnel updated"
                 Update-TunnelListView
             } catch {
+                Write-SSHXLog "Action: Edit failed - $_" -Level 'ERROR'
                 [System.Windows.Forms.MessageBox]::Show("Edit failed: $_", 'sshx', 'OK', 'Error') | Out-Null
             }
         }
     }
 
     # Delete tunnel
-    $deleteTunnel = {
-        $t = Get-SelectedTunnel -Lv $script:lv
+    $script:deleteTunnel = {
+        $t = Get-SelectedTunnel
         if (-not $t) {
             [System.Windows.Forms.MessageBox]::Show('Select a tunnel first.', 'sshx', 'OK', 'Information') | Out-Null
             return
         }
         $confirm = [System.Windows.Forms.MessageBox]::Show("Delete tunnel '$($t.Name)'?`n`nThis will stop the tunnel if running.", 'Confirm Delete', 'YesNo', 'Question')
         if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
+            Write-SSHXLog "Action: Deleting tunnel '$($t.Name)'"
             try {
                 Remove-Tunnel -Name $t.Name
+                Write-SSHXLog "Action: Tunnel deleted"
                 Update-TunnelListView
             } catch {
+                Write-SSHXLog "Action: Delete failed - $_" -Level 'ERROR'
                 [System.Windows.Forms.MessageBox]::Show("Delete failed: $_", 'sshx', 'OK', 'Error') | Out-Null
             }
         }
     }
 
     # Wire up buttons
-    $btnAdd.Add_Click($addTunnel)
-    $btnEdit.Add_Click($editTunnel)
-    $btnDelete.Add_Click($deleteTunnel)
-    $btnStart.Add_Click({ & $act 'Start' })
-    $btnRestart.Add_Click({ & $act 'Restart' })
-    $btnStop.Add_Click({ & $act 'Stop' })
+    $btnAdd.Add_Click($script:addTunnel)
+    $btnEdit.Add_Click($script:editTunnel)
+    $btnDelete.Add_Click($script:deleteTunnel)
+    $btnStart.Add_Click({ & $script:act 'Start' })
+    $btnRestart.Add_Click({ & $script:act 'Restart' })
+    $btnStop.Add_Click({ & $script:act 'Stop' })
+    $btnRefresh.Add_Click({ Update-TunnelListView })
     $btnExport.Add_Click({ Export-Tunnels })
+    
+    # F5 to refresh
+    $f.KeyPreview = $true
+    $f.Add_KeyDown({
+        param($sender, $e)
+        if ($e.KeyCode -eq [System.Windows.Forms.Keys]::F5) {
+            Update-TunnelListView
+            $e.Handled = $true
+        }
+    })
 
     # Context menu
-    $miStart.Add_Click({ & $act 'Start' })
-    $miRestart.Add_Click({ & $act 'Restart' })
-    $miStop.Add_Click({ & $act 'Stop' })
-    $miEdit.Add_Click($editTunnel)
-    $miDelete.Add_Click($deleteTunnel)
+    $miStart.Add_Click({ & $script:act 'Start' })
+    $miRestart.Add_Click({ & $script:act 'Restart' })
+    $miStop.Add_Click({ & $script:act 'Stop' })
+    $miEdit.Add_Click($script:editTunnel)
+    $miDelete.Add_Click($script:deleteTunnel)
 
     # Double-click to edit
-    $script:lv.Add_DoubleClick($editTunnel)
+    $script:lv.Add_DoubleClick($script:editTunnel)
 
-    # Auto refresh
-    $tmRefresh = New-Object System.Windows.Forms.Timer
-    $tmRefresh.Interval = 2000
-    $tmRefresh.Add_Tick({ Update-TunnelListView })
-    $tmRefresh.Start()
-
+    # Load tunnels once when form opens (full status check)
     $f.Add_Load({ 
         Write-SSHXLog "UI: Form loaded"
-        Update-TunnelListView 
+        Update-TunnelListView
     })
 
-    $f.Add_Resize({
-        $y = [int]$f.ClientSize.Height - 40
-        $sepY = $y + 5
-        $exportX = [int]$f.ClientSize.Width - 85
-        $btnAdd.Location = New-Object System.Drawing.Point(12, $y)
-        $btnEdit.Location = New-Object System.Drawing.Point(77, $y)
-        $btnDelete.Location = New-Object System.Drawing.Point(142, $y)
-        $sep1.Location = New-Object System.Drawing.Point(210, $sepY)
-        $btnStart.Location = New-Object System.Drawing.Point(225, $y)
-        $btnRestart.Location = New-Object System.Drawing.Point(290, $y)
-        $btnStop.Location = New-Object System.Drawing.Point(360, $y)
-        $btnExport.Location = New-Object System.Drawing.Point($exportX, $y)
-        $script:lv.Height = [int]$f.ClientSize.Height - 60
-        $script:lv.Width = [int]$f.ClientSize.Width - 24
-    })
+    # Note: Buttons use Anchor property for automatic resize handling
+    # ListView uses Anchor for auto-resize as well
 
     $f.Add_FormClosing({ 
-        if ($null -ne $tmRefresh) { 
-            try { $tmRefresh.Stop() } catch { }
-            try { $tmRefresh.Dispose() } catch { }
-        }
+        Write-SSHXLog "UI: Closing"
     })
 
     return $f

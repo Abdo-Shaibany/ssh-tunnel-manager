@@ -57,9 +57,14 @@ Managing SSH tunnels on Windows typically means:
 ### Core Functionality
 - **Graphical Interface** — No command-line knowledge required
 - **Persistent Tunnels** — Tunnels keep running until you stop them
-- **Auto-Reconnect** — Automatically reconnects on network/VPN changes
+- **Auto-Reconnect** — Automatically reconnects on network/VPN changes with exponential backoff
 - **Multiple Tunnels** — Manage as many tunnels as you need
 - **No External Dependencies** — Uses Windows built-in OpenSSH client
+
+### Authentication
+- **Password Authentication** — Traditional username/password with DPAPI encryption
+- **SSH Key Authentication** — Support for private key files (RSA, Ed25519, etc.)
+- **Test Connection** — Verify credentials before saving a tunnel
 
 ### User Experience
 - **Real-Time Status** — Visual indicators show tunnel health at a glance
@@ -67,8 +72,13 @@ Managing SSH tunnels on Windows typically means:
   - 🟠 **Failing** — Runner active but tunnel not established
   - ⚫ **Stopped** — Tunnel is not running
 - **Quick Actions** — Start, stop, restart with one click
+- **Clone Tunnels** — Duplicate existing tunnels quickly
 - **Keyboard Shortcuts** — F5 to refresh, double-click to edit
 - **Context Menu** — Right-click for quick access to all actions
+- **Log Viewer** — View runner logs directly in the UI
+
+### Organization
+- **Tunnel Groups** — Organize tunnels into groups (e.g., "Work", "Personal")
 
 ### Security
 - **DPAPI Encryption** — Passwords encrypted using Windows Data Protection API
@@ -77,8 +87,10 @@ Managing SSH tunnels on Windows typically means:
 - **No Telemetry** — Completely offline, no data sent anywhere
 
 ### Management
-- **Full CRUD** — Add, edit, delete tunnel configurations
-- **Export/Backup** — Save configurations to JSON for backup
+- **Full CRUD** — Add, edit, delete, clone tunnel configurations
+- **Import/Export** — Easy configuration backup and sharing
+- **Auto-Start** — Option to run sshx at Windows startup
+- **Configurable Timeout** — Set connection timeout per tunnel (5-300 seconds)
 - **Validation** — Prevents duplicate ports and invalid configurations
 
 <!-- 
@@ -163,16 +175,20 @@ wscript sshx.vbs
 1. **Launch** — Double-click `sshx.vbs`
 2. **Add Tunnel** — Click the **Add** button
 3. **Configure** — Fill in your SSH connection details:
-   - Name: `My Database`
-   - Remote Host: `bastion.example.com`
-   - Remote Port: `5432` (the service port on remote network)
-   - Local Port: `15432` (where you'll connect locally)
-   - SSH Port: `22`
-   - Username: `your-ssh-user`
-   - Password: `your-ssh-password`
-4. **Save** — Click **Save**
-5. **Start** — Select the tunnel and click **Start**
-6. **Connect** — Your app can now connect to `localhost:15432`
+   - **Name**: `My Database`
+   - **Group** (optional): `Work`
+   - **Remote Host**: `bastion.example.com`
+   - **Remote Port**: `5432` (the service port on remote network)
+   - **Local Port**: `15432` (where you'll connect locally)
+   - **SSH Port**: `22`
+   - **Username**: `your-ssh-user`
+   - **Auth Method**: Choose Password or SSH Key
+     - For Password: Enter your password
+     - For SSH Key: Browse to your private key file (e.g., `~/.ssh/id_rsa`)
+4. **Test** (optional) — Click **Test Connection** to verify credentials
+5. **Save** — Click **Save**
+6. **Start** — Select the tunnel and click **Start**
+7. **Connect** — Your app can now connect to `localhost:15432`
 
 <!-- 
 ![Add Tunnel Dialog](screenshots/add-tunnel-dialog.png)
@@ -191,9 +207,10 @@ The main window displays all configured tunnels in a list view:
 |--------|-------------|
 | **Name** | Your friendly name for the tunnel |
 | **Status** | Current state (Connected/Failing/Stopped) |
+| **Group** | Tunnel group for organization |
 | **Local** | Local port number (localhost:PORT) |
 | **Remote** | Remote host and port being forwarded |
-| **SSH** | SSH server port (usually 22) |
+| **Auth** | Authentication type (Pwd/Key) |
 | **User** | SSH username |
 
 ### Toolbar Actions
@@ -202,24 +219,28 @@ The main window displays all configured tunnels in a list view:
 |--------|--------|----------|
 | **Add** | Create a new tunnel | — |
 | **Edit** | Modify selected tunnel | Double-click |
+| **Clone** | Duplicate selected tunnel | — |
 | **Delete** | Remove selected tunnel | — |
 | **Start** | Start the selected tunnel | — |
 | **Restart** | Stop and restart tunnel | — |
 | **Stop** | Stop the selected tunnel | — |
+| **Log** | View runner log for tunnel | — |
 | **Refresh** | Update status display | F5 |
-| **Export** | Save configs to JSON file | — |
+
+### Menu Bar
+
+| Menu | Options |
+|------|---------|
+| **File** | Import, Export, Exit |
+| **Tools** | Run at Startup |
+| **Help** | GitHub, About |
 
 ### Context Menu
 
 Right-click any tunnel for quick access to:
 - Start / Restart / Stop
-- Edit
-- Delete
-
-<!-- 
-![Context Menu](screenshots/context-menu.png)
-TODO: Add screenshot showing right-click context menu
--->
+- Edit / Clone / Delete
+- View Log
 
 ### Understanding Tunnel Status
 
@@ -258,25 +279,49 @@ The `tunnels.json` file contains your tunnel definitions:
       "Username": "admin",
       "PasswordEncrypted": "<DPAPI encrypted string>",
       "SshPort": 22,
-      "Pid": null
+      "Pid": null,
+      "AuthMethod": "password",
+      "IdentityFile": "",
+      "Group": "Work",
+      "ConnectTimeout": 30
     }
   ]
 }
 ```
+
+| Field | Description |
+|-------|-------------|
+| `Name` | Unique tunnel identifier |
+| `RemoteHost` | SSH server hostname or IP |
+| `RemotePort` | Port to forward on remote side |
+| `LocalPort` | Local port to listen on |
+| `Username` | SSH username |
+| `PasswordEncrypted` | DPAPI-encrypted password (for password auth) |
+| `SshPort` | SSH server port (default: 22) |
+| `AuthMethod` | `password` or `key` |
+| `IdentityFile` | Path to SSH private key (for key auth) |
+| `Group` | Optional group name for organization |
+| `ConnectTimeout` | Connection timeout in seconds (5-300) |
+| `Pid` | Runner process ID (managed by sshx) |
 
 > **Note**: The `PasswordEncrypted` field can only be decrypted by the same Windows user account that created it.
 
 ### Backup & Migration
 
 **To backup your tunnels:**
-1. Use **Export** button (excludes passwords)
+1. Use **File > Export** (excludes passwords for security)
 2. Or copy `%APPDATA%\SSHTunnelManager\tunnels.json`
 
 **To migrate to another machine:**
-1. Export tunnels to JSON
-2. Copy the JSON to the new machine
-3. Import by placing in `%APPDATA%\SSHTunnelManager\`
+1. Export tunnels via **File > Export**
+2. Copy the JSON file to the new machine
+3. Use **File > Import** to load the tunnels
 4. Edit each tunnel to re-enter passwords (DPAPI encryption is user-specific)
+5. For SSH key auth, ensure the key files exist at the same paths
+
+**Import Options:**
+- **Skip existing** — Keep current tunnels if names match
+- **Replace existing** — Overwrite current tunnels with imported ones
 
 ---
 
@@ -293,10 +338,11 @@ sshx uses **Windows DPAPI (Data Protection API)** to encrypt passwords:
 
 ### Best Practices
 
-1. **Use SSH keys when possible** — While sshx uses passwords, SSH keys are more secure for production environments
-2. **Don't share config files** — The `tunnels.json` contains encrypted passwords tied to your account
-3. **Use strong passwords** — The encryption is only as strong as your credentials
-4. **Keep Windows updated** — Security patches are released periodically
+1. **Use SSH keys when possible** — SSH keys are more secure than passwords for production environments
+2. **Protect your private keys** — Use a passphrase on your SSH keys and store them securely
+3. **Don't share config files** — The `tunnels.json` contains encrypted passwords tied to your account
+4. **Use strong passwords** — The encryption is only as strong as your credentials
+5. **Keep Windows updated** — Security patches are released periodically
 
 ### What sshx Does NOT Do
 
@@ -385,18 +431,21 @@ ssh -p 22 username@hostname
 
 ### Can I use SSH keys instead of passwords?
 
-Currently, sshx only supports password authentication. SSH key support may be added in a future version.
+Yes! sshx supports both password and SSH key authentication. When adding or editing a tunnel, select "SSH Key" as the auth method and browse to your private key file.
+
+Common key locations:
+- `%USERPROFILE%\.ssh\id_rsa` (RSA)
+- `%USERPROFILE%\.ssh\id_ed25519` (Ed25519)
 
 ### Will my tunnels survive a Windows restart?
 
-The tunnels themselves won't auto-start after reboot, but your configurations are saved. Simply launch sshx and start the tunnels you need.
+The tunnels themselves won't auto-start after reboot, but your configurations are saved. You have two options:
+1. Launch sshx manually and start the tunnels you need
+2. Enable auto-start via **Tools > Run at Windows Startup** to launch sshx automatically at login
 
 ### Can I run sshx at Windows startup?
 
-Yes! Create a shortcut to `sshx.vbs` and place it in your Startup folder:
-```
-%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup
-```
+Yes! Go to **Tools > Run at Windows Startup** to enable/disable auto-start. This creates a shortcut in your Windows Startup folder.
 
 ### How many tunnels can I run simultaneously?
 
@@ -455,7 +504,10 @@ sshx/
 3. **Start Tunnel** spawns a background **Runner** (`SSHTunnelRunner.ps1`)
 4. **Runner** uses `ssh.exe` with local port forwarding (`-L`) and:
    - Uses `SSH_ASKPASS` mechanism for password authentication
+   - Uses `-i` flag for SSH key authentication
    - Monitors network changes (WiFi/VPN) and auto-reconnects
+   - Uses exponential backoff for retries (5s → 10s → 20s → 40s → 60s max)
+   - Resets backoff after stable connections (>60 seconds)
    - Keeps trying until stopped or tunnel config is deleted
 
 ---
@@ -464,11 +516,11 @@ sshx/
 
 | Limitation | Details | Workaround |
 |------------|---------|------------|
-| Password auth only | SSH keys not supported | Use password authentication |
-| No portable mode | Config stored in %APPDATA% | Manual backup/restore |
+| No portable mode | Config stored in %APPDATA% | Use Export/Import for backup |
 | Windows only | Requires Windows + PowerShell | Use native SSH on Linux/Mac |
-| No import feature | Can't import from export file via UI | Manually place in %APPDATA% |
 | Single user | Config tied to Windows user | Each user maintains own tunnels |
+| No jump host | Direct SSH only | Use ProxyJump in ~/.ssh/config |
+| Passphrase keys | Keys with passphrases require ssh-agent | Use ssh-agent or passphrase-less keys |
 
 ---
 

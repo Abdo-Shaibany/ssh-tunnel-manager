@@ -143,12 +143,7 @@ ssh -V
 
 ## Installation
 
-### Option 1: Download Release (Recommended)
-1. Download the latest release from the Releases page
-2. Extract to a folder of your choice
-3. Double-click `sshx.vbs` to launch
-
-### Option 2: Clone Repository
+### Option 1: Clone Repository
 ```powershell
 git clone https://github.com/YOUR_USERNAME/sshx.git
 cd sshx
@@ -156,7 +151,7 @@ cd sshx
 wscript sshx.vbs
 ```
 
-### Option 3: Manual Download
+### Option 2: Manual Download
 1. Download all files from this repository
 2. Keep the folder structure intact
 3. Double-click `sshx.vbs` to launch

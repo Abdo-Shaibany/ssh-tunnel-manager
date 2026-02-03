@@ -1,6 +1,7 @@
 <#
 .SYNOPSIS
-  Core logic for SSH Tunnel Manager: config, plink, encryption, tunnel operations.
+  Core logic for SSH Tunnel Manager: config, ssh, encryption, tunnel operations.
+  Uses Windows built-in OpenSSH (ssh.exe) - no external dependencies like PuTTY.
   Config stored in %APPDATA%\SSHTunnelManager\tunnels.json with DPAPI-encrypted passwords.
   Logs written to %APPDATA%\SSHTunnelManager\sshx.log
 #>
@@ -60,12 +61,21 @@ function Write-SSHXLog {
 # Helpers
 # ---------------------------------------------------------------------------
 
-function Get-PlinkPath {
-    $p = Get-Command plink -ErrorAction SilentlyContinue
+function Get-SshPath {
+    # First check for OpenSSH in Windows System32 (built-in)
+    $systemSsh = Join-Path $env:SystemRoot 'System32\OpenSSH\ssh.exe'
+    if (Test-Path $systemSsh) { return $systemSsh }
+    
+    # Then check PATH
+    $p = Get-Command ssh -ErrorAction SilentlyContinue
     if ($p) { return $p.Source }
-    Write-SSHXLog "plink not found in PATH" -Level 'ERROR'
-    throw 'plink not found. PuTTY/Plink must be installed and on PATH.'
+    
+    Write-SSHXLog "ssh.exe not found" -Level 'ERROR'
+    throw 'ssh.exe not found. Windows OpenSSH must be enabled. Go to Settings > Apps > Optional Features > Add OpenSSH Client.'
 }
+
+# Backward compatibility alias
+function Get-PlinkPath { Get-SshPath }
 
 function Initialize-ConfigDir {
     if (-not (Test-Path $ConfigDir)) { 
@@ -309,25 +319,81 @@ function Get-ForwardArg { param($Tunnel)
 }
 
 # ---------------------------------------------------------------------------
-# Plink invocation (for runner) — builds args, does not start
+# SSH invocation (for runner) — builds args and environment, does not start
 # ---------------------------------------------------------------------------
 
-function Get-PlinkInvocationInfo { param([string]$Name)
+function Get-SshInvocationInfo { param([string]$Name)
     $t = Get-TunnelByName -Name $Name
     if (-not $t) { throw "Tunnel '$Name' not found." }
-    $plink = Get-PlinkPath
+    $ssh = Get-SshPath
     if ([string]::IsNullOrWhiteSpace($t.RemoteHost)) { throw "Tunnel '$Name' has empty RemoteHost. Edit the tunnel to fix." }
     if ([string]::IsNullOrWhiteSpace($t.Username)) { throw "Tunnel '$Name' has empty Username. Edit the tunnel to fix." }
+    
+    # Get password for SSH_ASKPASS mechanism
     $pw = if (-not [string]::IsNullOrWhiteSpace($t.Password)) { $t.Password }
           elseif (-not [string]::IsNullOrWhiteSpace($t.PasswordPlain)) { $t.PasswordPlain }
           elseif (-not [string]::IsNullOrWhiteSpace($t.PasswordEncrypted)) { Get-PlainPassword -Encrypted $t.PasswordEncrypted }
-          else { throw "Tunnel '$Name' has no Password, PasswordPlain, or PasswordEncrypted. Edit the JSON to set Password." }
+          else { throw "Tunnel '$Name' has no password configured. Edit the tunnel to set a password." }
+    
     $fwd = Get-ForwardArg -Tunnel $t
-    $plinkArgs = @('-pw', $pw, '-N', '-batch') + $fwd
-    $sp = [int]$t.SshPort; if ($sp -gt 0 -and $sp -ne 22) { $plinkArgs += '-P', [string]$sp }
-    $plinkArgs += '-l', $t.Username
-    $plinkArgs += $t.RemoteHost
-    @{ FilePath = $plink; ArgumentList = $plinkArgs }
+    
+    # Build SSH arguments
+    # -N: No remote command (just forwarding)
+    # -o StrictHostKeyChecking=accept-new: Auto-accept new host keys (like plink's behavior)
+    # -o ServerAliveInterval=30: Send keepalive every 30s
+    # -o ServerAliveCountMax=3: Disconnect after 3 missed keepalives
+    # -o ExitOnForwardFailure=yes: Exit if port forwarding fails
+    $sshArgs = @(
+        '-N',
+        '-o', 'StrictHostKeyChecking=accept-new',
+        '-o', 'ServerAliveInterval=30',
+        '-o', 'ServerAliveCountMax=3',
+        '-o', 'ExitOnForwardFailure=yes'
+    )
+    $sshArgs += $fwd
+    
+    # SSH port (-p for OpenSSH, was -P for plink)
+    $sp = [int]$t.SshPort
+    if ($sp -gt 0 -and $sp -ne 22) { $sshArgs += '-p', [string]$sp }
+    
+    # user@host format
+    $sshArgs += "$($t.Username)@$($t.RemoteHost)"
+    
+    @{ 
+        FilePath = $ssh
+        ArgumentList = $sshArgs
+        Password = $pw
+        TunnelName = $Name
+    }
+}
+
+# Backward compatibility alias
+function Get-PlinkInvocationInfo { param([string]$Name) Get-SshInvocationInfo -Name $Name }
+
+# Create askpass helper script for password authentication
+function New-AskPassScript {
+    param([string]$Password, [string]$TunnelName)
+    
+    $safe = $TunnelName -replace '[^\w\-]', '_'
+    $askpassPath = Join-Path $env:TEMP "sshx_askpass_${safe}.cmd"
+    
+    # Create a batch file that echoes the password
+    # Using @echo off and echo without newline issues
+    $content = "@echo off`r`necho $Password"
+    [System.IO.File]::WriteAllText($askpassPath, $content)
+    
+    return $askpassPath
+}
+
+function Remove-AskPassScript {
+    param([string]$TunnelName)
+    
+    $safe = $TunnelName -replace '[^\w\-]', '_'
+    $askpassPath = Join-Path $env:TEMP "sshx_askpass_${safe}.cmd"
+    
+    if (Test-Path $askpassPath) {
+        Remove-Item -LiteralPath $askpassPath -Force -ErrorAction SilentlyContinue
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -403,7 +469,7 @@ function Stop-Tunnel { param([string]$Name)
     $configDir = Join-Path $env:APPDATA 'SSHTunnelManager'
     $safe = $Name -replace '[^\w\-]', '_'
     $stopFlag = Join-Path $configDir "stop_${safe}.flag"
-    $pidFile  = Join-Path $env:TEMP "sshx_${safe}_plink.pid"
+    $pidFile  = Join-Path $env:TEMP "sshx_${safe}_ssh.pid"
     if (-not $runnerPid) { 
         Write-SSHXLog "Tunnel '$Name' has no PID, nothing to stop"
         return $false 
@@ -412,15 +478,17 @@ function Stop-Tunnel { param([string]$Name)
     [void](New-Item -ItemType Directory -Path $configDir -Force -ErrorAction SilentlyContinue)
     Set-Content -LiteralPath $stopFlag -Value '1' -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $pidFile) {
-        $plinkPid = $null
-        if ([int]::TryParse((Get-Content -LiteralPath $pidFile -Raw -ErrorAction SilentlyContinue).Trim(), [ref]$plinkPid)) {
-            Write-SSHXLog "Stopping plink process (PID: $plinkPid)"
-            Get-Process -Id $plinkPid -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        $sshPid = $null
+        if ([int]::TryParse((Get-Content -LiteralPath $pidFile -Raw -ErrorAction SilentlyContinue).Trim(), [ref]$sshPid)) {
+            Write-SSHXLog "Stopping SSH process (PID: $sshPid)"
+            Get-Process -Id $sshPid -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
         }
         Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue
     }
     Get-Process -Id $runnerPid -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $stopFlag -Force -ErrorAction SilentlyContinue
+    # Cleanup askpass script
+    Remove-AskPassScript -TunnelName $Name
     $cfg = Get-TunnelConfig
     foreach ($x in $cfg.Tunnels) { if ($x.Name -eq $Name) { $x.Pid = $null; break } }
     Save-TunnelConfig -Config $cfg
@@ -498,7 +566,8 @@ Export-ModuleMember -Function @(
     'Get-TunnelConfig','Save-TunnelConfig',
     'Get-EncryptedPassword','Get-PlainPassword',
     'Get-TunnelByName','Get-AllTunnels','Add-Tunnel','Update-Tunnel','Remove-Tunnel',
-    'Get-ForwardArg','Get-PlinkInvocationInfo','Start-Tunnel','Stop-Tunnel','Get-TunnelStatus','Get-AllTunnelStatuses',
-    'Get-PlinkPath','Initialize-ConfigDir','Test-HostKeyError',
-    'Test-ValidPort','Test-LocalPortAvailable','Test-DuplicateTunnel','Test-PortInUseOnSystem','Test-LocalPortListening'
+    'Get-ForwardArg','Get-SshInvocationInfo','Get-PlinkInvocationInfo','Start-Tunnel','Stop-Tunnel','Get-TunnelStatus','Get-AllTunnelStatuses',
+    'Get-SshPath','Get-PlinkPath','Initialize-ConfigDir','Test-HostKeyError',
+    'Test-ValidPort','Test-LocalPortAvailable','Test-DuplicateTunnel','Test-PortInUseOnSystem','Test-LocalPortListening',
+    'New-AskPassScript','Remove-AskPassScript'
 )

@@ -811,9 +811,9 @@ function New-MainForm {
 # ---------------------------------------------------------------------------
 
 try {
-    Get-SshPath | Out-Null
+    Get-PlinkPath | Out-Null
 } catch {
-    [System.Windows.Forms.MessageBox]::Show("$_`n`nWindows OpenSSH client is required.`nGo to: Settings > Apps > Optional Features > Add OpenSSH Client", 'sshx', 'OK', 'Error') | Out-Null
+    [System.Windows.Forms.MessageBox]::Show("$_`n`nInstall PuTTY and add plink to PATH.", 'sshx', 'OK', 'Error') | Out-Null
     exit 1
 }
 

@@ -35,7 +35,7 @@ TODO: Add screenshot of main window showing tunnel list with various statuses
 ## Why sshx?
 
 Managing SSH tunnels on Windows typically means:
-- Running command-line plink/ssh commands manually
+- Running command-line ssh commands manually
 - Writing batch scripts that don't handle reconnection
 - Losing tunnels when switching WiFi or VPN
 - Forgetting which tunnels are running
@@ -44,7 +44,7 @@ Managing SSH tunnels on Windows typically means:
 
 | Traditional Approach | With sshx |
 |---------------------|-----------|
-| Manual plink commands | Point-and-click GUI |
+| Manual ssh commands | Point-and-click GUI |
 | Tunnels die on network change | Auto-reconnect in seconds |
 | No visibility into status | Real-time status indicators |
 | Passwords in plain text scripts | Encrypted with Windows DPAPI |
@@ -59,6 +59,7 @@ Managing SSH tunnels on Windows typically means:
 - **Persistent Tunnels** — Tunnels keep running until you stop them
 - **Auto-Reconnect** — Automatically reconnects on network/VPN changes
 - **Multiple Tunnels** — Manage as many tunnels as you need
+- **No External Dependencies** — Uses Windows built-in OpenSSH client
 
 ### User Experience
 - **Real-Time Status** — Visual indicators show tunnel health at a glance
@@ -122,20 +123,20 @@ Access internal company services while working remotely:
 |-------------|---------|
 | **OS** | Windows 10/11 or Windows Server 2016+ |
 | **PowerShell** | 5.1 or later (pre-installed on Windows 10+) |
-| **PuTTY** | `plink.exe` must be accessible in system PATH |
+| **OpenSSH** | Windows built-in OpenSSH client (usually pre-installed) |
 
-### Installing PuTTY
+### Enabling OpenSSH Client
 
-1. Download PuTTY from the official site: https://www.chiark.greenend.org.uk/~sgtatham/putty/latest.html
-2. Run the installer (recommended) or extract the ZIP
-3. **Important**: Ensure the installation directory is in your system PATH
-   - Default installer location: `C:\Program Files\PuTTY`
-   - The installer typically adds this to PATH automatically
+The Windows OpenSSH client is typically pre-installed on Windows 10 (1809+) and Windows 11. To verify or enable it:
+
+1. Open **Settings** > **Apps** > **Optional Features**
+2. Search for "OpenSSH Client"
+3. If not installed, click **Add a feature** and install "OpenSSH Client"
 
 **Verify installation:**
 ```powershell
-plink -V
-# Should output: plink: Release 0.xx
+ssh -V
+# Should output: OpenSSH_for_Windows_x.x.x.x, ...
 ```
 
 ---
@@ -145,25 +146,26 @@ plink -V
 ### Option 1: Download Release (Recommended)
 1. Download the latest release from the Releases page
 2. Extract to a folder of your choice
-3. Run `sshx.bat`
+3. Double-click `sshx.vbs` to launch
 
 ### Option 2: Clone Repository
 ```powershell
 git clone https://github.com/YOUR_USERNAME/sshx.git
 cd sshx
-.\sshx.bat
+# Double-click sshx.vbs or run:
+wscript sshx.vbs
 ```
 
 ### Option 3: Manual Download
 1. Download all files from this repository
 2. Keep the folder structure intact
-3. Run `sshx.bat`
+3. Double-click `sshx.vbs` to launch
 
 ---
 
 ## Quick Start
 
-1. **Launch** — Double-click `sshx.bat`
+1. **Launch** — Double-click `sshx.vbs`
 2. **Add Tunnel** — Click the **Add** button
 3. **Configure** — Fill in your SSH connection details:
    - Name: `My Database`
@@ -299,7 +301,7 @@ sshx uses **Windows DPAPI (Data Protection API)** to encrypt passwords:
 1. **Use SSH keys when possible** — While sshx uses passwords, SSH keys are more secure for production environments
 2. **Don't share config files** — The `tunnels.json` contains encrypted passwords tied to your account
 3. **Use strong passwords** — The encryption is only as strong as your credentials
-4. **Keep PuTTY updated** — Security patches are released periodically
+4. **Keep Windows updated** — Security patches are released periodically
 
 ### What sshx Does NOT Do
 
@@ -313,21 +315,20 @@ sshx uses **Windows DPAPI (Data Protection API)** to encrypt passwords:
 
 ## Troubleshooting
 
-### "plink not found" Error
+### "ssh.exe not found" Error
 
-**Problem**: sshx can't find the plink executable.
+**Problem**: sshx can't find the OpenSSH client.
 
 **Solution**:
-1. Verify PuTTY is installed
-2. Check if plink is in PATH:
+1. Check if OpenSSH is installed:
    ```powershell
-   plink -V
+   ssh -V
    ```
-3. If not found, add PuTTY to your PATH:
-   - Open System Properties → Advanced → Environment Variables
-   - Edit `Path` under User variables
-   - Add the PuTTY installation directory (e.g., `C:\Program Files\PuTTY`)
-   - Restart any open terminals/applications
+2. If not found, enable OpenSSH Client:
+   - Open **Settings** > **Apps** > **Optional Features**
+   - Click **Add a feature**
+   - Search for and install "OpenSSH Client"
+3. Restart sshx after installation
 
 ### Host Key Verification Failed
 
@@ -335,10 +336,12 @@ sshx uses **Windows DPAPI (Data Protection API)** to encrypt passwords:
 
 **Solution**: Accept the host key manually first:
 ```powershell
-plink -P 22 username@hostname
-# When prompted, type 'y' to accept and store the host key
-# Then close the connection (Ctrl+C)
+ssh -p 22 username@hostname
+# When prompted, type 'yes' to accept and store the host key
+# Then close the connection (Ctrl+C or type 'exit')
 ```
+
+> **Note**: sshx uses `-o StrictHostKeyChecking=accept-new` which auto-accepts new host keys but will reject changed keys for security.
 
 ### Tunnel Shows "Failing" Status
 
@@ -350,7 +353,7 @@ plink -P 22 username@hostname
    - Wrong password
    - Server not reachable
    - SSH port blocked by firewall
-   - Host key not accepted (see above)
+   - Host key changed (security warning)
 
 ### Port Already in Use
 
@@ -379,6 +382,8 @@ plink -P 22 username@hostname
 - Ask server admin to increase `ClientAliveInterval` on the SSH server
 - Check if corporate firewall/proxy is interfering
 
+> **Note**: sshx uses `ServerAliveInterval=30` and `ServerAliveCountMax=3` to detect dead connections quickly.
+
 ---
 
 ## FAQ
@@ -393,7 +398,7 @@ The tunnels themselves won't auto-start after reboot, but your configurations ar
 
 ### Can I run sshx at Windows startup?
 
-Yes! Create a shortcut to `sshx.bat` and place it in your Startup folder:
+Yes! Create a shortcut to `sshx.vbs` and place it in your Startup folder:
 ```
 %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup
 ```
@@ -414,9 +419,13 @@ Yes. sshx:
 
 Yes, sshx works with any SSH server. Configure the Remote Host as your bastion server, and set the Remote Port to the service port accessible from that bastion.
 
-### Why use plink instead of OpenSSH?
+### Why use Windows OpenSSH?
 
-PuTTY/plink has been the standard SSH client for Windows for decades. It's reliable, well-tested, and widely deployed in enterprise environments. OpenSSH support could be added in the future.
+sshx uses the Windows built-in OpenSSH client which:
+- Comes pre-installed on modern Windows (10/11)
+- Requires no external dependencies like PuTTY
+- Is maintained and updated by Microsoft
+- Supports standard SSH features and configuration
 
 ---
 
@@ -424,13 +433,13 @@ PuTTY/plink has been the standard SSH client for Windows for decades. It's relia
 
 ```
 sshx/
-├── sshx.bat                    # Windows launcher (entry point)
+├── sshx.vbs                    # Windows launcher (entry point, no console window)
 ├── README.md                   # This file
 ├── LICENSE                     # License file
 ├── screenshots/                # Screenshots for documentation
 │   └── .gitkeep
 └── src/
-    ├── sshx.ps1                # Main GUI application
+    ├── sshx.ps1                # Main GUI application (Windows Forms)
     ├── SSHTunnelCore.psm1      # Core module (CRUD, encryption, tunnel operations)
     └── SSHTunnelRunner.ps1     # Background process with auto-reconnect
 ```
@@ -439,10 +448,20 @@ sshx/
 
 | File | Purpose |
 |------|---------|
-| `sshx.bat` | Simple launcher that invokes the PowerShell script |
+| `sshx.vbs` | VBScript launcher that starts PowerShell without showing a console window |
 | `sshx.ps1` | Windows Forms GUI with intro screen and main window |
 | `SSHTunnelCore.psm1` | Core logic: config management, DPAPI encryption, tunnel start/stop |
-| `SSHTunnelRunner.ps1` | Background runner that keeps plink alive and handles network changes |
+| `SSHTunnelRunner.ps1` | Background runner that keeps SSH tunnel alive and handles network changes |
+
+### How It Works
+
+1. **Launcher** (`sshx.vbs`) starts PowerShell hidden (no console window)
+2. **GUI** (`sshx.ps1`) shows the main interface with tunnel list
+3. **Start Tunnel** spawns a background **Runner** (`SSHTunnelRunner.ps1`)
+4. **Runner** uses `ssh.exe` with local port forwarding (`-L`) and:
+   - Uses `SSH_ASKPASS` mechanism for password authentication
+   - Monitors network changes (WiFi/VPN) and auto-reconnects
+   - Keeps trying until stopped or tunnel config is deleted
 
 ---
 
@@ -453,7 +472,7 @@ sshx/
 | Password auth only | SSH keys not supported | Use password authentication |
 | No portable mode | Config stored in %APPDATA% | Manual backup/restore |
 | Windows only | Requires Windows + PowerShell | Use native SSH on Linux/Mac |
-| No import feature | Can't import from export file | Manually place in %APPDATA% |
+| No import feature | Can't import from export file via UI | Manually place in %APPDATA% |
 | Single user | Config tied to Windows user | Each user maintains own tunnels |
 
 ---
@@ -469,8 +488,8 @@ Contributions are welcome! Here's how you can help:
 ### Development Setup
 
 1. Clone the repository
-2. Ensure PuTTY is installed
-3. Run `sshx.bat` to test changes
+2. Ensure Windows OpenSSH is installed
+3. Run `wscript sshx.vbs` or launch `sshx.ps1` directly in PowerShell
 4. Check logs in `%APPDATA%\SSHTunnelManager\` for debugging
 
 ---
@@ -483,7 +502,7 @@ This project is licensed under the MIT License. See [LICENSE](LICENSE) for detai
 
 ## Acknowledgments
 
-- **PuTTY** — The SSH client that powers the tunnels (https://www.putty.org/)
+- **Windows OpenSSH** — The SSH client that powers the tunnels
 - **Windows Forms** — Microsoft's UI framework for desktop applications
 
 ---

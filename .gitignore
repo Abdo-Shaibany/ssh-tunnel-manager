@@ -1,0 +1,30 @@
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# IDE/Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# PowerShell
+*.ps1xml
+
+# Don't commit actual config files (contain encrypted passwords)
+# Users should generate their own
+tunnels.json
+
+# Local test files
+test/
+tests/
+*.test.ps1

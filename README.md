@@ -1,0 +1,493 @@
+# sshx
+
+**A lightweight SSH tunnel manager for Windows with a graphical interface.**
+
+Create, manage, and monitor persistent SSH tunnels that automatically reconnect on network changes, VPN switches, or connection drops.
+
+<!-- 
+![sshx Main Window](screenshots/main-window.png)
+TODO: Add screenshot of main window showing tunnel list with various statuses
+-->
+
+---
+
+## Table of Contents
+
+- [Why sshx?](#why-sshx)
+- [Features](#features)
+- [Use Cases](#use-cases)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Usage Guide](#usage-guide)
+- [Configuration](#configuration)
+- [Security](#security)
+- [Troubleshooting](#troubleshooting)
+- [FAQ](#faq)
+- [Project Structure](#project-structure)
+- [Known Limitations](#known-limitations)
+- [Contributing](#contributing)
+- [License](#license)
+- [Acknowledgments](#acknowledgments)
+
+---
+
+## Why sshx?
+
+Managing SSH tunnels on Windows typically means:
+- Running command-line plink/ssh commands manually
+- Writing batch scripts that don't handle reconnection
+- Losing tunnels when switching WiFi or VPN
+- Forgetting which tunnels are running
+
+**sshx** solves these problems with a simple GUI that keeps your tunnels alive and reconnects them automatically.
+
+| Traditional Approach | With sshx |
+|---------------------|-----------|
+| Manual plink commands | Point-and-click GUI |
+| Tunnels die on network change | Auto-reconnect in seconds |
+| No visibility into status | Real-time status indicators |
+| Passwords in plain text scripts | Encrypted with Windows DPAPI |
+| Start tunnels manually after reboot | Quick restart with saved configs |
+
+---
+
+## Features
+
+### Core Functionality
+- **Graphical Interface** — No command-line knowledge required
+- **Persistent Tunnels** — Tunnels keep running until you stop them
+- **Auto-Reconnect** — Automatically reconnects on network/VPN changes
+- **Multiple Tunnels** — Manage as many tunnels as you need
+
+### User Experience
+- **Real-Time Status** — Visual indicators show tunnel health at a glance
+  - 🟢 **Connected** — Tunnel is active and port is listening
+  - 🟠 **Failing** — Runner active but tunnel not established
+  - ⚫ **Stopped** — Tunnel is not running
+- **Quick Actions** — Start, stop, restart with one click
+- **Keyboard Shortcuts** — F5 to refresh, double-click to edit
+- **Context Menu** — Right-click for quick access to all actions
+
+### Security
+- **DPAPI Encryption** — Passwords encrypted using Windows Data Protection API
+- **No Plain Text Storage** — Credentials never stored in readable format
+- **Secure Export** — Exported configs exclude passwords
+- **No Telemetry** — Completely offline, no data sent anywhere
+
+### Management
+- **Full CRUD** — Add, edit, delete tunnel configurations
+- **Export/Backup** — Save configurations to JSON for backup
+- **Validation** — Prevents duplicate ports and invalid configurations
+
+<!-- 
+![Tunnel Status Indicators](screenshots/tunnel-running.png)
+TODO: Add screenshot showing connected tunnel with green status
+-->
+
+---
+
+## Use Cases
+
+### Database Access
+Connect to remote databases through a bastion/jump host:
+```
+Local App → localhost:5432 → SSH Tunnel → Production PostgreSQL
+Local App → localhost:3306 → SSH Tunnel → Production MySQL
+Local App → localhost:1433 → SSH Tunnel → Production SQL Server
+```
+
+### Internal Services
+Access internal company services while working remotely:
+- Internal dashboards and admin panels
+- Development/staging servers
+- Internal APIs and microservices
+- Monitoring tools (Grafana, Kibana, etc.)
+
+### Development Workflows
+- Connect IDE to remote debugging ports
+- Access remote Redis/Memcached instances
+- Tunnel to container services running on remote hosts
+
+### Security & Compliance
+- Access services without exposing them to the public internet
+- Maintain encrypted connections to sensitive resources
+- Audit trail through SSH server logs
+
+---
+
+## Requirements
+
+| Requirement | Details |
+|-------------|---------|
+| **OS** | Windows 10/11 or Windows Server 2016+ |
+| **PowerShell** | 5.1 or later (pre-installed on Windows 10+) |
+| **PuTTY** | `plink.exe` must be accessible in system PATH |
+
+### Installing PuTTY
+
+1. Download PuTTY from the official site: https://www.chiark.greenend.org.uk/~sgtatham/putty/latest.html
+2. Run the installer (recommended) or extract the ZIP
+3. **Important**: Ensure the installation directory is in your system PATH
+   - Default installer location: `C:\Program Files\PuTTY`
+   - The installer typically adds this to PATH automatically
+
+**Verify installation:**
+```powershell
+plink -V
+# Should output: plink: Release 0.xx
+```
+
+---
+
+## Installation
+
+### Option 1: Download Release (Recommended)
+1. Download the latest release from the Releases page
+2. Extract to a folder of your choice
+3. Run `sshx.bat`
+
+### Option 2: Clone Repository
+```powershell
+git clone https://github.com/YOUR_USERNAME/sshx.git
+cd sshx
+.\sshx.bat
+```
+
+### Option 3: Manual Download
+1. Download all files from this repository
+2. Keep the folder structure intact
+3. Run `sshx.bat`
+
+---
+
+## Quick Start
+
+1. **Launch** — Double-click `sshx.bat`
+2. **Add Tunnel** — Click the **Add** button
+3. **Configure** — Fill in your SSH connection details:
+   - Name: `My Database`
+   - Remote Host: `bastion.example.com`
+   - Remote Port: `5432` (the service port on remote network)
+   - Local Port: `15432` (where you'll connect locally)
+   - SSH Port: `22`
+   - Username: `your-ssh-user`
+   - Password: `your-ssh-password`
+4. **Save** — Click **Save**
+5. **Start** — Select the tunnel and click **Start**
+6. **Connect** — Your app can now connect to `localhost:15432`
+
+<!-- 
+![Add Tunnel Dialog](screenshots/add-tunnel-dialog.png)
+TODO: Add screenshot of the Add Tunnel dialog with sample values
+-->
+
+---
+
+## Usage Guide
+
+### Main Window
+
+The main window displays all configured tunnels in a list view:
+
+| Column | Description |
+|--------|-------------|
+| **Name** | Your friendly name for the tunnel |
+| **Status** | Current state (Connected/Failing/Stopped) |
+| **Local** | Local port number (localhost:PORT) |
+| **Remote** | Remote host and port being forwarded |
+| **SSH** | SSH server port (usually 22) |
+| **User** | SSH username |
+
+### Toolbar Actions
+
+| Button | Action | Keyboard |
+|--------|--------|----------|
+| **Add** | Create a new tunnel | — |
+| **Edit** | Modify selected tunnel | Double-click |
+| **Delete** | Remove selected tunnel | — |
+| **Start** | Start the selected tunnel | — |
+| **Restart** | Stop and restart tunnel | — |
+| **Stop** | Stop the selected tunnel | — |
+| **Refresh** | Update status display | F5 |
+| **Export** | Save configs to JSON file | — |
+
+### Context Menu
+
+Right-click any tunnel for quick access to:
+- Start / Restart / Stop
+- Edit
+- Delete
+
+<!-- 
+![Context Menu](screenshots/context-menu.png)
+TODO: Add screenshot showing right-click context menu
+-->
+
+### Understanding Tunnel Status
+
+| Status | Color | Meaning | Action |
+|--------|-------|---------|--------|
+| **Connected** | Green | Tunnel active, port listening | Ready to use |
+| **Starting...** | Orange | Tunnel being established | Wait a moment |
+| **Failing** | Orange-Red | Runner active but can't connect | Check credentials/network |
+| **Stopping...** | Gray | Tunnel being shut down | Wait a moment |
+| **Stopped** | Black | Tunnel not running | Click Start |
+
+---
+
+## Configuration
+
+### Storage Locations
+
+| Item | Path |
+|------|------|
+| Tunnel configs | `%APPDATA%\SSHTunnelManager\tunnels.json` |
+| Application log | `%APPDATA%\SSHTunnelManager\sshx.log` |
+| Runner logs | `%TEMP%\sshx_runner_<name>.log` |
+
+### Configuration File Format
+
+The `tunnels.json` file contains your tunnel definitions:
+
+```json
+{
+  "Tunnels": [
+    {
+      "Name": "Production DB",
+      "RemoteHost": "bastion.example.com",
+      "RemotePort": 5432,
+      "LocalPort": 15432,
+      "Username": "admin",
+      "PasswordEncrypted": "<DPAPI encrypted string>",
+      "SshPort": 22,
+      "Pid": null
+    }
+  ]
+}
+```
+
+> **Note**: The `PasswordEncrypted` field can only be decrypted by the same Windows user account that created it.
+
+### Backup & Migration
+
+**To backup your tunnels:**
+1. Use **Export** button (excludes passwords)
+2. Or copy `%APPDATA%\SSHTunnelManager\tunnels.json`
+
+**To migrate to another machine:**
+1. Export tunnels to JSON
+2. Copy the JSON to the new machine
+3. Import by placing in `%APPDATA%\SSHTunnelManager\`
+4. Edit each tunnel to re-enter passwords (DPAPI encryption is user-specific)
+
+---
+
+## Security
+
+### Password Protection
+
+sshx uses **Windows DPAPI (Data Protection API)** to encrypt passwords:
+
+- Passwords are encrypted using your Windows user credentials
+- The encrypted data can only be decrypted by the same Windows user account
+- Even if someone copies your config file, they cannot decrypt the passwords without access to your Windows account
+- Passwords are never logged or displayed in the UI
+
+### Best Practices
+
+1. **Use SSH keys when possible** — While sshx uses passwords, SSH keys are more secure for production environments
+2. **Don't share config files** — The `tunnels.json` contains encrypted passwords tied to your account
+3. **Use strong passwords** — The encryption is only as strong as your credentials
+4. **Keep PuTTY updated** — Security patches are released periodically
+
+### What sshx Does NOT Do
+
+- Does not store passwords in plain text
+- Does not send any data over the network (except SSH connections)
+- Does not include telemetry or analytics
+- Does not require admin privileges
+- Does not modify system settings
+
+---
+
+## Troubleshooting
+
+### "plink not found" Error
+
+**Problem**: sshx can't find the plink executable.
+
+**Solution**:
+1. Verify PuTTY is installed
+2. Check if plink is in PATH:
+   ```powershell
+   plink -V
+   ```
+3. If not found, add PuTTY to your PATH:
+   - Open System Properties → Advanced → Environment Variables
+   - Edit `Path` under User variables
+   - Add the PuTTY installation directory (e.g., `C:\Program Files\PuTTY`)
+   - Restart any open terminals/applications
+
+### Host Key Verification Failed
+
+**Problem**: First connection to a new server fails with host key error.
+
+**Solution**: Accept the host key manually first:
+```powershell
+plink -P 22 username@hostname
+# When prompted, type 'y' to accept and store the host key
+# Then close the connection (Ctrl+C)
+```
+
+### Tunnel Shows "Failing" Status
+
+**Problem**: Runner is active but tunnel won't connect.
+
+**Diagnosis**:
+1. Check the runner log: `%TEMP%\sshx_runner_<tunnelname>.log`
+2. Common causes:
+   - Wrong password
+   - Server not reachable
+   - SSH port blocked by firewall
+   - Host key not accepted (see above)
+
+### Port Already in Use
+
+**Problem**: Can't start tunnel because local port is in use.
+
+**Solution**:
+1. Choose a different local port
+2. Or find and stop the process using that port:
+   ```powershell
+   netstat -ano | findstr :5432
+   # Note the PID (last column)
+   taskkill /PID <pid> /F
+   ```
+
+### Tunnel Disconnects Frequently
+
+**Problem**: Tunnel keeps dropping and reconnecting.
+
+**Possible causes**:
+- Unstable network connection
+- SSH server timeout settings
+- Firewall or proxy interference
+
+**Solutions**:
+- Check your network stability
+- Ask server admin to increase `ClientAliveInterval` on the SSH server
+- Check if corporate firewall/proxy is interfering
+
+---
+
+## FAQ
+
+### Can I use SSH keys instead of passwords?
+
+Currently, sshx only supports password authentication. SSH key support may be added in a future version.
+
+### Will my tunnels survive a Windows restart?
+
+The tunnels themselves won't auto-start after reboot, but your configurations are saved. Simply launch sshx and start the tunnels you need.
+
+### Can I run sshx at Windows startup?
+
+Yes! Create a shortcut to `sshx.bat` and place it in your Startup folder:
+```
+%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup
+```
+
+### How many tunnels can I run simultaneously?
+
+There's no hard limit. Each tunnel runs as a separate process, so system resources (memory, handles) are the only constraint. Most users run 5-15 tunnels without issues.
+
+### Is this safe for corporate/enterprise use?
+
+Yes. sshx:
+- Stores data locally only (no cloud)
+- Uses Windows-native encryption (DPAPI)
+- Has no telemetry or external connections
+- Works behind corporate firewalls/proxies (as long as SSH is allowed)
+
+### Can I use this with SSH bastion/jump hosts?
+
+Yes, sshx works with any SSH server. Configure the Remote Host as your bastion server, and set the Remote Port to the service port accessible from that bastion.
+
+### Why use plink instead of OpenSSH?
+
+PuTTY/plink has been the standard SSH client for Windows for decades. It's reliable, well-tested, and widely deployed in enterprise environments. OpenSSH support could be added in the future.
+
+---
+
+## Project Structure
+
+```
+sshx/
+├── sshx.bat                    # Windows launcher (entry point)
+├── README.md                   # This file
+├── LICENSE                     # License file
+├── screenshots/                # Screenshots for documentation
+│   └── .gitkeep
+└── src/
+    ├── sshx.ps1                # Main GUI application
+    ├── SSHTunnelCore.psm1      # Core module (CRUD, encryption, tunnel operations)
+    └── SSHTunnelRunner.ps1     # Background process with auto-reconnect
+```
+
+### Component Overview
+
+| File | Purpose |
+|------|---------|
+| `sshx.bat` | Simple launcher that invokes the PowerShell script |
+| `sshx.ps1` | Windows Forms GUI with intro screen and main window |
+| `SSHTunnelCore.psm1` | Core logic: config management, DPAPI encryption, tunnel start/stop |
+| `SSHTunnelRunner.ps1` | Background runner that keeps plink alive and handles network changes |
+
+---
+
+## Known Limitations
+
+| Limitation | Details | Workaround |
+|------------|---------|------------|
+| Password auth only | SSH keys not supported | Use password authentication |
+| No portable mode | Config stored in %APPDATA% | Manual backup/restore |
+| Windows only | Requires Windows + PowerShell | Use native SSH on Linux/Mac |
+| No import feature | Can't import from export file | Manually place in %APPDATA% |
+| Single user | Config tied to Windows user | Each user maintains own tunnels |
+
+---
+
+## Contributing
+
+Contributions are welcome! Here's how you can help:
+
+1. **Report bugs** — Open an issue with steps to reproduce
+2. **Suggest features** — Open an issue with your idea
+3. **Submit PRs** — Fork, make changes, submit a pull request
+
+### Development Setup
+
+1. Clone the repository
+2. Ensure PuTTY is installed
+3. Run `sshx.bat` to test changes
+4. Check logs in `%APPDATA%\SSHTunnelManager\` for debugging
+
+---
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+
+---
+
+## Acknowledgments
+
+- **PuTTY** — The SSH client that powers the tunnels (https://www.putty.org/)
+- **Windows Forms** — Microsoft's UI framework for desktop applications
+
+---
+
+<p align="center">
+  <b>sshx</b> — SSH tunnels made simple
+</p>

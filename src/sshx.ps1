@@ -528,6 +528,21 @@ function New-MainForm {
     $btnStop.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left
     $f.Controls.Add($btnStop)
 
+    # GitHub Link (center-ish)
+    $lnkGitHub = New-Object System.Windows.Forms.LinkLabel
+    $lnkGitHub.Text = 'GitHub'
+    $lnkGitHub.Location = New-Object System.Drawing.Point(430, ($btnY + 6))
+    $lnkGitHub.Size = New-Object System.Drawing.Size(45, 16)
+    $lnkGitHub.LinkColor = [System.Drawing.Color]::RoyalBlue
+    $lnkGitHub.ActiveLinkColor = [System.Drawing.Color]::DodgerBlue
+    $lnkGitHub.VisitedLinkColor = [System.Drawing.Color]::RoyalBlue
+    $lnkGitHub.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom
+    $lnkGitHub.Add_LinkClicked({
+        # Change this URL to your actual GitHub repo
+        Start-Process 'https://github.com/yourusername/sshx'
+    })
+    $f.Controls.Add($lnkGitHub)
+
     # Refresh Button (right side)
     $btnRefresh = New-Object System.Windows.Forms.Button
     $btnRefresh.Text = 'Refresh'

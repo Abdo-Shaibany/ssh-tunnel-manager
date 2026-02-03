@@ -1,0 +1,14 @@
+# Screenshots Directory
+
+Place your screenshots here:
+
+1. main-window.png        - Main application window with tunnel list
+2. add-tunnel-dialog.png  - The Add/Edit tunnel dialog
+3. tunnel-running.png     - Shows a connected tunnel (green status)
+4. context-menu.png       - Right-click context menu
+5. intro-screen.png       - The startup splash screen (optional)
+
+Recommended image specs:
+- Format: PNG
+- Width: 800-1200px
+- Use Windows Snipping Tool (Win+Shift+S) or ShareX
